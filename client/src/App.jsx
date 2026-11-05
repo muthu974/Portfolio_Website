@@ -19,49 +19,53 @@ export default function App() {
   const [dbState, setDbState] = useState('fallback-mode');
   const [activeSection, setActiveSection] = useState('hero');
 
-  // Attempt to synchronize with live backend Express REST APIs
+  // Load independent API resources concurrently so the page isn't blocked by
+  // sequential network round trips. A failed endpoint won't block the others.
   useEffect(() => {
+    const controller = new AbortController();
+    let isMounted = true;
+
+    const fetchJson = async (url) => {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) return null;
+      return response.json();
+    };
+
     const fetchBackendData = async () => {
-      try {
-        const healthRes = await fetch('/api/health');
-        if (healthRes.ok) {
-          const healthData = await healthRes.json();
-          setBackendOnline(true);
-          setDbState(healthData.database?.state || 'connected');
-        }
+      const results = await Promise.allSettled([
+        fetchJson('/api/health'),
+        fetchJson('/api/skills'),
+        fetchJson('/api/projects'),
+        fetchJson('/api/profile'),
+      ]);
 
-        // Fetch skills from API
-        const skillsRes = await fetch('/api/skills');
-        if (skillsRes.ok) {
-          const sData = await skillsRes.json();
-          if (sData.data && sData.data.length > 0) {
-            setSkills(sData.data);
-          }
-        }
+      if (!isMounted) return;
 
-        // Fetch projects from API
-        const projectsRes = await fetch('/api/projects');
-        if (projectsRes.ok) {
-          const pData = await projectsRes.json();
-          if (pData.data && pData.data.length > 0) {
-            setProjects(pData.data);
-          }
-        }
+      const [healthResult, skillsResult, projectsResult, profileResult] = results;
+      const healthData = healthResult.status === 'fulfilled' ? healthResult.value : null;
+      const skillsData = skillsResult.status === 'fulfilled' ? skillsResult.value : null;
+      const projectsData = projectsResult.status === 'fulfilled' ? projectsResult.value : null;
+      const profileResponse = profileResult.status === 'fulfilled' ? profileResult.value : null;
 
-        // Fetch profile from API
-        const profileRes = await fetch('/api/profile');
-        if (profileRes.ok) {
-          const profData = await profileRes.json();
-          if (profData.data) {
-            setProfile(profData.data);
-          }
-        }
-      } catch (err) {
+      if (healthData) {
+        setBackendOnline(true);
+        setDbState(healthData.database?.state || 'connected');
+      }
+      if (skillsData?.data?.length) setSkills(skillsData.data);
+      if (projectsData?.data?.length) setProjects(projectsData.data);
+      if (profileResponse?.data) setProfile(profileResponse.data);
+
+      if (results.every((result) => result.status === 'rejected')) {
         console.log('Running in client-standalone mode with complete local profile data.');
       }
     };
 
     fetchBackendData();
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
   }, []);
 
   // Track active section for navbar highlighting
